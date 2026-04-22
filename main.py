@@ -1,101 +1,119 @@
 import torch
 import pandas as pd
 import numpy as np
-import transformers
 import torchvision
-from torchvision import models, transforms
-from PIL import Image
-from skimage import io, transform
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
 import torch.nn as nn
-import torch.nn.functional as F
-from transformers import BertModel
-from transformers import AdamW, get_linear_schedule_with_warmup
+from sklearn.model_selection import train_test_split
 import random
-import time
 import os
-import re
-import math
 import json
 
 from mult_models import *
 from dataset import *
 
 
-df_train = pd.read_csv("./data/twitter/train_posts_clean.csv")
-df_test = pd.read_csv("./data/twitter/test_posts.csv")
-
-if torch.cuda.is_available():       
-    device = torch.device("cuda")
-else:
-    print('No GPU available, using the CPU instead.')
-    device = torch.device("cpu")
-    
-# 图像转换
-image_transform = torchvision.transforms.Compose(
-    [
-        torchvision.transforms.Resize(size=(224, 224)),
-        torchvision.transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ]
-)
-
-# 实例化 BERT tokenizer
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
-
-# 固定最大长度
-MAX_LEN = 500
-data_dir = "./data/twitter/"
-
-# 读取数据
-transformed_dataset_train = FakeNewsDataset(df_train, data_dir+"images_train/", image_transform, tokenizer, MAX_LEN)
-
-transformed_dataset_val = FakeNewsDataset(df_test, data_dir+"images_test/", image_transform, tokenizer, MAX_LEN)
-
-train_dataloader = DataLoader(transformed_dataset_train, batch_size=8,
-                        shuffle=True, num_workers=0)
-
-val_dataloader = DataLoader(transformed_dataset_val, batch_size=8,
-                        shuffle=True, num_workers=0)
-
-
-# 损失
-loss_fn = nn.BCELoss()
-
 def set_seed(seed_value=42):
     random.seed(seed_value)
     np.random.seed(seed_value)
     torch.manual_seed(seed_value)
     torch.cuda.manual_seed_all(seed_value)
-
-with open("./config/config.json",'r',encoding='utf-8') as f:
-    parameter_dict_model= json.load(f)
-
-with open("./config/config_opt.json",'r',encoding='utf-8') as f:
-    parameter_dict_opt= json.load(f)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
-# 设置随机种子
-set_seed(7)
+# --- Config (single source of truth) ---
+with open("./config/config.json", 'r', encoding='utf-8') as f:
+    cfg = json.load(f)
 
-final_model = Text_Concat_Vision(parameter_dict_model)
+# --- Seed first, before any random operations ---
+set_seed(cfg['seed'])
 
-final_model = final_model.to(device) 
+# --- Device ---
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    print('No GPU available, using the CPU instead.')
+    device = torch.device("cpu")
 
-# 优化器
-optimizer = AdamW(final_model.parameters(),
-                  lr=parameter_dict_opt['l_r'],
-                  eps=parameter_dict_opt['eps'])
+# --- Image transform ---
+image_transform = torchvision.transforms.Compose([
+    torchvision.transforms.Resize(size=(224, 224)),
+    torchvision.transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
 
-# training steps总数
-total_steps = len(train_dataloader) * 50
+# --- Tokenizer ---
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
 
-# 学习率衰减
-scheduler = get_linear_schedule_with_warmup(optimizer,
-                                            num_warmup_steps=0, # 默认值
-                                            num_training_steps=total_steps)
+MAX_LEN   = cfg['max_len']
+BATCH_SIZE = cfg['batch_size']
+EPOCHS     = cfg['epochs']
+data_dir   = "./data/twitter/"
 
+# --- Load raw CSVs ---
+df_all_train = pd.read_csv(data_dir + "train_posts_clean.csv")
+df_test      = pd.read_csv(data_dir + "test_posts.csv")
 
-train(model=final_model,loss_fn=loss_fn, optimizer=optimizer, scheduler=scheduler,train_dataloader=train_dataloader, val_dataloader=val_dataloader,
-      epochs=1, evaluation=True,device=device,save_best=True)
+# --- Stratified train / val split from training data ---
+# Test set is kept completely separate until final evaluation.
+df_train, df_val = train_test_split(
+    df_all_train,
+    test_size=cfg['val_split_ratio'],
+    random_state=cfg['seed'],
+    stratify=df_all_train['label']
+)
+df_train = df_train.reset_index(drop=True)
+df_val   = df_val.reset_index(drop=True)
+
+print(f"Split sizes — train: {len(df_train)}, val: {len(df_val)}, test: {len(df_test)}")
+
+# --- Datasets ---
+train_dataset = FakeNewsDataset(df_train, data_dir + "images_train/", image_transform, tokenizer, MAX_LEN)
+val_dataset   = FakeNewsDataset(df_val,   data_dir + "images_train/", image_transform, tokenizer, MAX_LEN)
+test_dataset  = FakeNewsDataset(df_test,  data_dir + "images_test/",  image_transform, tokenizer, MAX_LEN)
+
+train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
+val_dataloader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+test_dataloader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+
+# --- Model ---
+final_model = Text_Concat_Vision(cfg)
+final_model = final_model.to(device)
+
+# --- Loss ---
+loss_fn = nn.BCELoss()
+
+# --- Optimizer ---
+optimizer = AdamW(final_model.parameters(), lr=cfg['l_r'], eps=cfg['eps'])
+
+# --- Scheduler (based on actual epochs, not a hardcoded constant) ---
+total_steps = len(train_dataloader) * EPOCHS
+scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=total_steps)
+
+# --- Train ---
+os.makedirs('./saved_models', exist_ok=True)
+MODEL_SAVE_PATH = './saved_models/best_model.pt'
+
+train(
+    model=final_model,
+    loss_fn=loss_fn,
+    optimizer=optimizer,
+    scheduler=scheduler,
+    train_dataloader=train_dataloader,
+    val_dataloader=val_dataloader,
+    epochs=EPOCHS,
+    device=device,
+    save_best=True,
+    model_save_path=MODEL_SAVE_PATH,
+    patience=cfg['early_stopping_patience'],
+    min_delta=cfg['early_stopping_min_delta']
+)
+
+# --- Final evaluation on held-out test set (run only once, after training) ---
+print("\n=== Final Test Set Evaluation ===")
+final_model.load_state_dict(torch.load(MODEL_SAVE_PATH, map_location=device))
+test_loss, test_accuracy = evaluate(final_model, loss_fn, test_dataloader, device)
+print(f"Test Loss: {test_loss:.6f} | Test Accuracy: {test_accuracy:.2f}%")
