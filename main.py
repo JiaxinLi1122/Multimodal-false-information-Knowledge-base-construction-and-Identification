@@ -4,7 +4,8 @@ import numpy as np
 import torchvision
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
+from transformers import BertTokenizer, get_linear_schedule_with_warmup
+from torch.optim import AdamW
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
