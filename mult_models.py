@@ -11,6 +11,8 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer
 import torch.nn.functional as F
 from transformers import AdamW, get_linear_schedule_with_warmup
+from sklearn.metrics import (precision_score, recall_score, f1_score,
+                             classification_report, confusion_matrix)
 import random
 import time
 import os
@@ -204,9 +206,11 @@ def train(model, loss_fn, optimizer, scheduler, train_dataloader, val_dataloader
         avg_train_loss = total_loss / len(train_dataloader)
 
         if val_dataloader is not None:
-            val_loss, val_accuracy = evaluate(model, loss_fn, val_dataloader, device)
+            metrics = evaluate(model, loss_fn, val_dataloader, device)
+            val_loss, val_accuracy = metrics['loss'], metrics['accuracy']
             time_elapsed = time.time() - t0_epoch
             print(f" {epoch_i + 1:^7} | {'-':^7} | {avg_train_loss:^12.6f} | {val_loss:^10.6f} | {val_accuracy:^9.2f} | {time_elapsed:^9.2f}s")
+            print(f"          precision={metrics['precision']:.2f}%  recall={metrics['recall']:.2f}%  f1={metrics['f1']:.2f}%  (binary/fake)")
             print("-"*70)
 
             if save_best:
@@ -229,25 +233,51 @@ def train(model, loss_fn, optimizer, scheduler, train_dataloader, val_dataloader
     
     
 def evaluate(model, loss_fn, val_dataloader, device):
+    """
+    Returns a dict with keys:
+        loss, accuracy, precision, recall, f1,
+        all_preds (np.array), all_labels (np.array)
+
+    precision/recall/f1 use average='binary' (positive class = fake = 1).
+    """
     model.eval()
 
-    val_accuracy = []
-    val_loss = []
+    all_preds  = []
+    all_labels = []
+    batch_losses = []
 
     for batch in val_dataloader:
         img_ip, text_ip, label = batch["image_id"], batch["BERT_ip"], batch['label']
         b_input_ids, b_attn_mask = tuple(t.to(device) for t in text_ip)
-        imgs_ip = img_ip.to(device)
+        imgs_ip  = img_ip.to(device)
         b_labels = label.to(device).to(torch.float32)
 
         with torch.no_grad():
             logits = model(text=[b_input_ids, b_attn_mask], image=imgs_ip)
 
         loss = loss_fn(logits, b_labels)
-        val_loss.append(loss.item())
+        batch_losses.append(loss.item())
 
-        preds = (logits >= 0.5).float()
-        accuracy = (preds == b_labels).cpu().numpy().mean() * 100
-        val_accuracy.append(accuracy)
+        preds = (logits >= 0.5).float().cpu().numpy()
+        all_preds.extend(preds)
+        all_labels.extend(b_labels.cpu().numpy())
 
-    return np.mean(val_loss), np.mean(val_accuracy)
+    all_preds  = np.array(all_preds)
+    all_labels = np.array(all_labels)
+
+    avg_loss  = float(np.mean(batch_losses))
+    accuracy  = float((all_preds == all_labels).mean() * 100)
+    # binary average: reports metrics for the fake (positive) class only
+    precision = float(precision_score(all_labels, all_preds, average='binary', zero_division=0) * 100)
+    recall    = float(recall_score   (all_labels, all_preds, average='binary', zero_division=0) * 100)
+    f1        = float(f1_score       (all_labels, all_preds, average='binary', zero_division=0) * 100)
+
+    return {
+        'loss':       avg_loss,
+        'accuracy':   accuracy,
+        'precision':  precision,
+        'recall':     recall,
+        'f1':         f1,
+        'all_preds':  all_preds,
+        'all_labels': all_labels,
+    }

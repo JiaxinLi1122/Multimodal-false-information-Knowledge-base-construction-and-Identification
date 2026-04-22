@@ -1,96 +1,70 @@
 import torch
 import pandas as pd
 import numpy as np
-import transformers
 import torchvision
-from torchvision import models, transforms
-from PIL import Image
-from skimage import io, transform
-from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from torch.utils.data import DataLoader
 from transformers import BertTokenizer
 import torch.nn as nn
-import torch.nn.functional as F
-from transformers import BertModel
-from transformers import AdamW, get_linear_schedule_with_warmup
-import random
+from sklearn.metrics import classification_report, confusion_matrix
 import time
-import os
-import re
-import math
 import json
-from mult_models import *
-from dataset import *
+
+from mult_models import Text_Concat_Vision, evaluate
+from dataset import FakeNewsDataset
+
 
 start = time.time()
-df_test = pd.read_csv("./data/twitter/test_posts.csv")
 
-if torch.cuda.is_available():       
+with open("./config/config.json", 'r', encoding='utf-8') as f:
+    cfg = json.load(f)
+
+if torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     print('No GPU available, using the CPU instead.')
     device = torch.device("cpu")
 
-image_transform = torchvision.transforms.Compose(
-    [
-        torchvision.transforms.Resize(size=(224, 224)),
-        torchvision.transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ]
-)
+image_transform = torchvision.transforms.Compose([
+    torchvision.transforms.Resize(size=(224, 224)),
+    torchvision.transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+])
 
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
 
-transformed_dataset_val = FakeNewsDataset(df_test, "./data/twitter/images_test/", image_transform, tokenizer, 500)
+df_test = pd.read_csv("./data/twitter/test_posts.csv")
+test_dataset = FakeNewsDataset(df_test, "./data/twitter/images_test/",
+                               image_transform, tokenizer, cfg['max_len'])
+test_dataloader = DataLoader(test_dataset, batch_size=cfg['batch_size'],
+                             shuffle=False, num_workers=0)
 
-val_dataloader = DataLoader(transformed_dataset_val, batch_size=8,
-                        shuffle=True, num_workers=0)
-
-
-with open("./config/config.json",'r',encoding='utf-8') as f:
-    parameter_dict_model= json.load(f)
-
-
-
-model = Text_Concat_Vision(parameter_dict_model)
-model.eval()
-model.load_state_dict(torch.load('./saved_models/best_model.pt'),False)
-model = model.to(device) 
+model = Text_Concat_Vision(cfg)
+model.load_state_dict(torch.load('./saved_models/best_model.pt', map_location=device))
+model = model.to(device)
 loss_fn = nn.BCELoss()
 
+m = evaluate(model, loss_fn, test_dataloader, device)
 
-val_accuracy = []
-val_loss = []
-predict = []
-    # 每个损失之后
-for batch in val_dataloader:
-    img_ip , text_ip, label = batch["image_id"], batch["BERT_ip"], batch['label']
-            
-    b_input_ids, b_attn_mask = tuple(t.to(device) for t in text_ip)
-
-    imgs_ip = img_ip.to(device)
-
-    b_labels = label.to(device)
-
-        # 计算logits
-    with torch.no_grad():
-        logits = model(text=[b_input_ids, b_attn_mask], image=imgs_ip)
-        b_labels=b_labels.to(torch.float32)
-            
-        # 计算loss
-    loss = loss_fn(logits, b_labels)
-    val_loss.append(loss.item())
-    predict.append(logits)
-
-    logits[logits<0.5] = 0
-    logits[logits>=0.5] = 1
-
-        # 计算准确率
-    accuracy = (logits == b_labels).cpu().numpy().mean() * 100
-    val_accuracy.append(accuracy)
-
-    # 计算平均准确率和验证集损失
-val_loss = np.mean(val_loss)
-val_accuracy = np.mean(val_accuracy)
 end = time.time()
-print("Model accuracy:",val_accuracy)
-print("Test time: ",end-start)
+
+print("=" * 60)
+print("Test Set Evaluation")
+print("=" * 60)
+print(f"Loss:      {m['loss']:.6f}")
+print(f"Accuracy:  {m['accuracy']:.2f}%")
+print(f"Precision: {m['precision']:.2f}%  (fake class)")
+print(f"Recall:    {m['recall']:.2f}%  (fake class)")
+print(f"F1-Score:  {m['f1']:.2f}%  (fake class)")
+
+print("\nClassification Report:")
+print(classification_report(m['all_labels'], m['all_preds'],
+                            target_names=['real (0)', 'fake (1)'], digits=4))
+
+cm = confusion_matrix(m['all_labels'], m['all_preds'])
+print("Confusion Matrix (rows=actual, cols=predicted):")
+print(f"                  Pred:real  Pred:fake")
+print(f"  Actual: real    {cm[0][0]:^9}  {cm[0][1]:^9}")
+print(f"  Actual: fake    {cm[1][0]:^9}  {cm[1][1]:^9}")
+print(f"\n  TN={cm[0][0]}  FP={cm[0][1]}  FN={cm[1][0]}  TP={cm[1][1]}")
+print(f"\nTest time: {end - start:.2f}s")

@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 import random
 import os
 import json
@@ -113,7 +114,28 @@ train(
 )
 
 # --- Final evaluation on held-out test set (run only once, after training) ---
-print("\n=== Final Test Set Evaluation ===")
+print("\n" + "="*60)
+print("Final Test Set Evaluation")
+print("="*60)
 final_model.load_state_dict(torch.load(MODEL_SAVE_PATH, map_location=device))
-test_loss, test_accuracy = evaluate(final_model, loss_fn, test_dataloader, device)
-print(f"Test Loss: {test_loss:.6f} | Test Accuracy: {test_accuracy:.2f}%")
+m = evaluate(final_model, loss_fn, test_dataloader, device)
+
+print(f"Loss:      {m['loss']:.6f}")
+print(f"Accuracy:  {m['accuracy']:.2f}%")
+print(f"Precision: {m['precision']:.2f}%  (fake class)")
+print(f"Recall:    {m['recall']:.2f}%  (fake class)")
+print(f"F1-Score:  {m['f1']:.2f}%  (fake class)")
+
+print("\nClassification Report:")
+print(classification_report(m['all_labels'], m['all_preds'],
+                            target_names=['real (0)', 'fake (1)'], digits=4))
+
+cm = confusion_matrix(m['all_labels'], m['all_preds'])
+print("Confusion Matrix (rows=actual, cols=predicted):")
+print(f"                  Pred:real  Pred:fake")
+print(f"  Actual: real    {cm[0][0]:^9}  {cm[0][1]:^9}")
+print(f"  Actual: fake    {cm[1][0]:^9}  {cm[1][1]:^9}")
+print(f"\n  True Negatives (TN): {cm[0][0]}  — real correctly identified")
+print(f"  False Positives (FP): {cm[0][1]}  — real misclassified as fake")
+print(f"  False Negatives (FN): {cm[1][0]}  — fake missed")
+print(f"  True Positives (TP): {cm[1][1]}  — fake correctly detected")
