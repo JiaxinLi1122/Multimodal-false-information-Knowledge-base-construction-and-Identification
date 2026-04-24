@@ -125,7 +125,8 @@ analyseBtn.addEventListener("click", async () => {
     const pageResponse = await chrome.tabs.sendMessage(tab.id, { action: "getPageText" });
     if (!pageResponse?.text) { renderError("No text received from the page."); return; }
 
-    const { text } = pageResponse;
+    const rawText = pageResponse.text;
+    const text    = rawText.slice(0, 2000);
 
     setStep(1); // "Capturing screenshot" active
 
@@ -137,25 +138,34 @@ analyseBtn.addEventListener("click", async () => {
       const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 70 });
       imageData = dataUrl.replace(/^data:image\/\w+;base64,/, "");
     } catch (captureErr) {
-      // Non-fatal – fall back to text-only analysis
       console.warn("Screenshot capture failed:", captureErr);
+      document.getElementById("step-2").textContent = "No image – text-only analysis";
     }
 
     setStep(2); // "Running model" active
 
-    // Step 3 – POST to backend
+    // Step 3 – POST to backend (5 s timeout)
     let apiResponse;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
     try {
       const res = await fetch(BACKEND_URL, {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, image_data: imageData }),
+        body:    JSON.stringify({ text, image_data: imageData }),
+        signal:  controller.signal,
       });
+      clearTimeout(timer);
 
       if (!res.ok) { renderError(`Backend returned status ${res.status}.`); return; }
       apiResponse = await res.json();
-    } catch (_networkErr) {
-      renderError("Failed to connect to backend. Is it running on port 8000?");
+    } catch (fetchErr) {
+      clearTimeout(timer);
+      if (fetchErr.name === "AbortError") {
+        renderError("Backend not available (request timed out after 5 s).");
+      } else {
+        renderError("Backend not available. Is it running on port 8000?");
+      }
       return;
     }
 

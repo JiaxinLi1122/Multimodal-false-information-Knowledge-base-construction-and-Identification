@@ -13,7 +13,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message.action === "showResult") {
     if (!_shadow) createSidebar();
-    setSidebarResult(message.result, message.error);
+    setSidebarResult(message.result, message.error, message.imageNote);
   }
 });
 
@@ -96,7 +96,7 @@ function setSidebarAnalyzing() {
   setExpanded(true);
 }
 
-function setSidebarResult(result, error) {
+function setSidebarResult(result, error, imageNote) {
   if (!_shadow) return;
 
   if (error || !result) {
@@ -120,6 +120,7 @@ function setSidebarResult(result, error) {
     <div class="mmd-pct">${pct}% probability of misinformation</div>
     <hr class="mmd-hr"/>
     ${exps ? `<div class="mmd-section">Key signals</div><ul class="mmd-exps">${exps}</ul>` : ""}
+    ${imageNote ? `<div class="mmd-note">${imageNote}</div>` : ""}
     <div class="mmd-meta">${note}</div>
   `;
   setExpanded(true);
@@ -307,6 +308,13 @@ const SIDEBAR_TEMPLATE = `<style>
     margin-top: auto;
     padding-top: 12px;
     border-top: 1px solid #f3f4f6;
+  }
+
+  .mmd-note {
+    font-size: 11px;
+    color: #9ca3af;
+    font-style: italic;
+    margin: 0 0 6px;
   }
 
   .mmd-error-msg {
