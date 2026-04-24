@@ -3,10 +3,13 @@
 // Flow:
 //   1. User clicks "Analyse Current Page"
 //   2. Identify the active browser tab
-//   3. Ask content.js for { text, imageUrl }        → step: "Extracting content"
-//   4. Prepare request payload                       → step: "Processing image"
-//   5. POST to /analyze and await response           → step: "Running model"
+//   3. Ask content.js for page text                 → step: "Extracting page text"
+//   4. captureVisibleTab → base64 JPEG screenshot   → step: "Capturing screenshot"
+//   5. POST { text, image_data } to /analyze        → step: "Running model"
 //   6. Render the returned result
+//
+// If captureVisibleTab fails the request is sent without image_data and the
+// backend falls through to text-only mode.
 
 const BACKEND_URL = "http://localhost:8000/analyze";
 
@@ -54,7 +57,8 @@ function setStep(activeIdx) {
   });
 }
 
-function renderResult({ risk, confidence, explanations, used_image }, charCount, imageUrl) {
+// imageCaptured: boolean – whether a screenshot was successfully taken
+function renderResult({ risk, confidence, explanations, used_image }, charCount, imageCaptured) {
   // Mark all steps done before transitioning
   STEPS.forEach(id => { document.getElementById(id).className = "done"; });
 
@@ -77,10 +81,10 @@ function renderResult({ risk, confidence, explanations, used_image }, charCount,
       explanationsList.appendChild(li);
     }
 
-    const imageUsedNote = used_image ? "image + text" : "text only";
-    const imageDetected = imageUrl ? "image detected" : "no image";
+    const inputNote  = used_image   ? "screenshot + text" : "text only";
+    const captureNote = imageCaptured ? "screenshot captured" : "no screenshot";
     metaLine.textContent =
-      `Model input: ${imageUsedNote} · ${imageDetected} · ${charCount.toLocaleString()} chars`;
+      `Model input: ${inputNote} · ${captureNote} · ${charCount.toLocaleString()} chars`;
   }, 350);
 }
 
@@ -104,12 +108,21 @@ analyseBtn.addEventListener("click", async () => {
     const pageResponse = await chrome.tabs.sendMessage(tab.id, { action: "getPageText" });
     if (!pageResponse?.text) { renderError("No text received from the page."); return; }
 
-    const { text, imageUrl } = pageResponse;
+    const { text } = pageResponse;
 
-    setStep(1); // "Processing image" active
+    setStep(1); // "Capturing screenshot" active
 
-    // Small deliberate pause so the step is visible before the network call fires
-    await new Promise(r => setTimeout(r, 400));
+    // Step 2 – capture a JPEG screenshot of the visible tab area.
+    // Requires the "activeTab" permission (already declared in manifest.json).
+    // Strip the "data:image/jpeg;base64," prefix before sending.
+    let imageData = null;
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 70 });
+      imageData = dataUrl.replace(/^data:image\/\w+;base64,/, "");
+    } catch (captureErr) {
+      // Non-fatal – fall back to text-only analysis
+      console.warn("Screenshot capture failed:", captureErr);
+    }
 
     setStep(2); // "Running model" active
 
@@ -119,7 +132,7 @@ analyseBtn.addEventListener("click", async () => {
       const res = await fetch(BACKEND_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, image_url: imageUrl ?? null }),
+        body: JSON.stringify({ text, image_data: imageData }),
       });
 
       if (!res.ok) { renderError(`Backend returned status ${res.status}.`); return; }
@@ -129,7 +142,7 @@ analyseBtn.addEventListener("click", async () => {
       return;
     }
 
-    renderResult(apiResponse, text.length, imageUrl);
+    renderResult(apiResponse, text.length, !!imageData);
 
   } catch (err) {
     renderError(err.message);
