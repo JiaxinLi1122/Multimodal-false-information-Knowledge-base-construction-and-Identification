@@ -40,10 +40,74 @@
       background: #f3f4f6;
       font-size: 13px;
       color: #374151;
-      transition: background 0.2s ease;
+      transition: background 0.25s ease;
     }
 
-    /* Risk badge – big centred label */
+    /* ── Loading state ───────────────────────────── */
+
+    #loading-output {
+      display: none;
+    }
+
+    .loading-header {
+      font-size: 15px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 10px;
+    }
+
+    .step-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      font-size: 12px;
+    }
+
+    .step-list li {
+      position: relative;
+      padding: 3px 0 3px 22px;
+      color: #d1d5db;
+      transition: color 0.2s;
+    }
+
+    .step-list li::before {
+      content: "○";
+      position: absolute;
+      left: 0;
+      font-size: 11px;
+      line-height: 20px;
+      color: #d1d5db;
+      transition: color 0.2s;
+    }
+
+    .step-list li.active {
+      color: #374151;
+      font-weight: 500;
+    }
+
+    .step-list li.active::before {
+      content: "●";
+      color: #4f46e5;
+      animation: pulse 0.9s ease-in-out infinite;
+    }
+
+    .step-list li.done {
+      color: #9ca3af;
+    }
+
+    .step-list li.done::before {
+      content: "✓";
+      color: #16a34a;
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
+    /* ── Result state ────────────────────────────── */
+
     #risk-badge {
       font-size: 22px;
       font-weight: 800;
@@ -56,7 +120,6 @@
     #risk-badge.MEDIUM  { color: #92400e; }
     #risk-badge.LOW     { color: #166534; }
 
-    /* Confidence line */
     #confidence-line {
       text-align: center;
       font-size: 12px;
@@ -64,37 +127,30 @@
       margin-bottom: 10px;
     }
 
-    /* Divider */
     .divider {
       border: none;
       border-top: 1px solid rgba(0,0,0,0.1);
       margin: 8px 0;
     }
 
-    /* Explanation bullet list */
     #explanations-list {
       margin: 6px 0 8px;
       padding-left: 18px;
       line-height: 1.55;
     }
 
-    #explanations-list li {
-      margin-bottom: 4px;
-    }
+    #explanations-list li { margin-bottom: 4px; }
 
-    /* Meta line at the bottom */
     #meta-line {
       font-size: 11px;
       color: #9ca3af;
       margin-top: 6px;
     }
 
-    /* Error / loading states */
-    #status-text {
-      color: #374151;
-    }
+    #analysis-output { display: none; }
 
-    /* Background colours per risk level */
+    /* ── Background colours per risk level ───────── */
+
     #result.HIGH    { background: #fee2e2; }
     #result.MEDIUM  { background: #fef9c3; }
     #result.LOW     { background: #dcfce7; }
@@ -106,17 +162,29 @@
   <button id="analyseBtn">Analyse Current Page</button>
 
   <div id="result">
-    <!-- Default state -->
+
+    <!-- 1. Idle / error state -->
     <span id="status-text">Press the button to analyse this page.</span>
 
-    <!-- Populated after a successful API response -->
-    <div id="analysis-output" style="display:none">
+    <!-- 2. Loading state -->
+    <div id="loading-output">
+      <div class="loading-header">Analyzing…</div>
+      <ul class="step-list">
+        <li id="step-1">Extracting content</li>
+        <li id="step-2">Processing image</li>
+        <li id="step-3">Running model</li>
+      </ul>
+    </div>
+
+    <!-- 3. Result state -->
+    <div id="analysis-output">
       <div id="risk-badge"></div>
       <div id="confidence-line"></div>
       <hr class="divider" />
       <ul id="explanations-list"></ul>
       <div id="meta-line"></div>
     </div>
+
   </div>
 
   <script src="popup.js"></script>
