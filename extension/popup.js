@@ -3,69 +3,31 @@
 // Flow:
 //   1. User clicks "Analyse Current Page"
 //   2. We find the active browser tab
-//   3. We send a message to content.js running in that tab
-//   4. content.js replies with the visible page text
-//   5. analyseText() scores the text with local keyword rules
-//   6. The result (risk level + explanation) is rendered in the popup
+//   3. We send a message to content.js to get the visible page text
+//   4. We POST the text to the local backend at /analyze
+//   5. The backend returns { risk, reason } which we render here
+
+const BACKEND_URL = "http://localhost:8000/analyze";
 
 const analyseBtn = document.getElementById("analyseBtn");
 const resultDiv  = document.getElementById("result");
 
-// Keyword rules evaluated in priority order (first match wins).
-// TODO: replace with a real model call once the Python backend is ready.
-const RULES = [
-  {
-    level: "HIGH",
-    keywords: ["shocking", "secret", "they don't want you to know", "wake up",
-               "banned", "suppressed", "cover-up", "what they're hiding"],
-    explanation: "Contains sensationalist or conspiracy-style language commonly associated with misinformation.",
-  },
-  {
-    level: "LOW",
-    keywords: ["study", "research", "according to", "published", "evidence",
-               "journal", "scientists", "peer-reviewed"],
-    explanation: "Contains language typical of evidence-based reporting.",
-  },
-];
-
-// Returns { level, explanation } for the given page text.
-function analyseText(text) {
-  const lower = text.toLowerCase();
-
-  for (const rule of RULES) {
-    const hit = rule.keywords.find((kw) => lower.includes(kw));
-    if (hit) {
-      return {
-        level: rule.level,
-        matchedKeyword: hit,
-        explanation: rule.explanation,
-      };
-    }
-  }
-
-  // No rule matched → medium risk
-  return {
-    level: "MEDIUM",
-    matchedKeyword: null,
-    explanation: "No strong indicators found. Manual review recommended.",
-  };
-}
-
-// Maps risk level to a colour used in the result box
+// Maps risk level to a background colour for the result box
 const LEVEL_COLOUR = { HIGH: "#fee2e2", MEDIUM: "#fef9c3", LOW: "#dcfce7" };
 
-function renderResult({ level, matchedKeyword, explanation }, charCount) {
-  resultDiv.style.background = LEVEL_COLOUR[level] ?? "#f3f4f6";
-
-  const keywordLine = matchedKeyword
-    ? `Triggered by: "${matchedKeyword}"\n`
-    : "";
-
+// Render a successful API response in the result box
+function renderResult({ risk, reason }, charCount) {
+  resultDiv.style.background = LEVEL_COLOUR[risk] ?? "#f3f4f6";
   resultDiv.textContent =
-    `Risk level: ${level}\n` +
-    `${keywordLine}` +
-    `\n${explanation}\n` +
-    `\n(${charCount.toLocaleString()} characters analysed – local rules only)`;
+    `Risk level: ${risk}\n\n` +
+    `${reason}\n\n` +
+    `(${charCount.toLocaleString()} characters sent to backend)`;
+}
+
+// Render an error message in the result box
+function renderError(message) {
+  resultDiv.style.background = "#f3f4f6";
+  resultDiv.textContent = `Error: ${message}`;
 }
 
 analyseBtn.addEventListener("click", async () => {
@@ -74,27 +36,51 @@ analyseBtn.addEventListener("click", async () => {
   resultDiv.textContent = "Extracting page text…";
 
   try {
-    // Get the currently active tab in the current window
+    // Step 1 – identify the active tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     if (!tab?.id) {
-      resultDiv.textContent = "Error: could not identify the active tab.";
+      renderError("Could not identify the active tab.");
       return;
     }
 
-    // Ask content.js to collect visible text from the page
-    const response = await chrome.tabs.sendMessage(tab.id, { action: "getPageText" });
+    // Step 2 – ask content.js for the visible page text
+    const pageResponse = await chrome.tabs.sendMessage(tab.id, { action: "getPageText" });
 
-    if (!response?.text) {
-      resultDiv.textContent = "Error: no text received from the page.";
+    if (!pageResponse?.text) {
+      renderError("No text received from the page.");
       return;
     }
 
-    const result = analyseText(response.text);
-    renderResult(result, response.text.length);
+    // Step 3 – show loading state while the API call is in flight
+    resultDiv.textContent = "Analyzing…";
+
+    // Step 4 – POST text to the backend
+    let apiResponse;
+    try {
+      const res = await fetch(BACKEND_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pageResponse.text }),
+      });
+
+      if (!res.ok) {
+        renderError(`Backend returned status ${res.status}.`);
+        return;
+      }
+
+      apiResponse = await res.json();
+    } catch (_networkErr) {
+      // fetch() itself throws when the server is unreachable
+      renderError("Failed to connect to backend. Is it running on port 8000?");
+      return;
+    }
+
+    // Step 5 – display the result
+    renderResult(apiResponse, pageResponse.text.length);
 
   } catch (err) {
-    resultDiv.textContent = `Error: ${err.message}`;
+    renderError(err.message);
   } finally {
     analyseBtn.disabled = false;
   }
