@@ -5,18 +5,23 @@
 # Run with:
 #   uvicorn main:app --reload
 #
-# Current behaviour: keyword-based fake analysis (no real model).
-# TODO: swap analyse_text() for a call to the BERT+VGG pipeline once the
-#       model server is integrated.
+# The trained Text_Concat_Vision model is loaded once at startup (inside
+# model_service.py).  The /analyze endpoint currently uses a text-only
+# fallback because the Chrome extension does not yet send an image.
+# When image support is added, swap predict_text_only() for predict().
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Multi-False Detector API", version="0.1.0")
+# Importing model_service triggers model loading – this happens once when
+# uvicorn starts, not on every request.
+from model_service import predict_text_only
 
-# Allow the Chrome extension (and local dev) to call this API.
-# In production, restrict origins to your actual domain.
+app = FastAPI(title="Multi-False Detector API", version="0.2.0")
+
+# Allow the Chrome extension (and local dev tools) to reach this API.
+# In production, replace "*" with your actual extension origin or domain.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,58 +44,20 @@ class AnalyseResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Keyword rules – mirrors the logic in extension/popup.js so both surfaces
-# agree until the real model is wired up.
-# --------------------------------------------------------------------------- #
-
-HIGH_KEYWORDS = [
-    "shocking", "secret", "they don't want you to know", "wake up",
-    "banned", "suppressed", "cover-up", "what they're hiding",
-]
-
-LOW_KEYWORDS = [
-    "study", "research", "according to", "published", "evidence",
-    "journal", "scientists", "peer-reviewed",
-]
-
-
-def analyse_text(text: str) -> AnalyseResponse:
-    """Return a risk level and reason based on keyword matching."""
-    lower = text.lower()
-
-    # Check high-risk keywords first (highest priority)
-    for kw in HIGH_KEYWORDS:
-        if kw in lower:
-            return AnalyseResponse(
-                risk="HIGH",
-                reason=f'Contains sensationalist language ("{kw}") commonly associated with misinformation.',
-            )
-
-    # Check low-risk keywords
-    for kw in LOW_KEYWORDS:
-        if kw in lower:
-            return AnalyseResponse(
-                risk="LOW",
-                reason=f'Contains evidence-based language ("{kw}") typical of credible reporting.',
-            )
-
-    # Default: no strong signal either way
-    return AnalyseResponse(
-        risk="MEDIUM",
-        reason="No strong indicators found. Manual review recommended.",
-    )
-
-
-# --------------------------------------------------------------------------- #
 # Endpoints
 # --------------------------------------------------------------------------- #
 
 @app.post("/analyze", response_model=AnalyseResponse)
 def analyze(request: AnalyseRequest) -> AnalyseResponse:
     """
-    Analyse a piece of text and return a misinformation risk level.
+    Analyse page text and return a misinformation risk level.
 
     Request body:  { "text": "..." }
     Response body: { "risk": "LOW|MEDIUM|HIGH", "reason": "..." }
+
+    Currently delegates to predict_text_only() because the extension only
+    sends text.  Switch to predict(text, image_tensor) once image capture
+    is implemented in the extension.
     """
-    return analyse_text(request.text)
+    result = predict_text_only(request.text)
+    return AnalyseResponse(**result)
